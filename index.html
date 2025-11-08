@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>5-Day Forecast — Lat/Lon</title>
+    <link rel="stylesheet" href="/style.css" />
+</head>
+
+<body>
+    <div class="app" role="application" aria-labelledby="app-title">
+        <header>
+            <div>
+                <h1 id="app-title">5-Day Forecast (by Latitude & Longitude)</h1>
+                <div class="meta">Enter latitude & longitude for any location (India or elsewhere). Click <strong>Get
+                        Forecast</strong>.</div>
+            </div>
+
+            <div class="controls" aria-hidden="false">
+                <input id="lat" type="text" inputmode="decimal" placeholder="Latitude — e.g. 28.6139" />
+                <input id="lon" type="text" inputmode="decimal" placeholder="Longitude — e.g. 77.2090" />
+                <button id="getBtn">Get Forecast</button>
+                <button id="sampleBtn" class="secondary" title="Use my current browser location">Use my
+                    location</button>
+            </div>
+        </header>
+
+        <main>
+            <div id="status" aria-live="polite"></div>
+            <div id="forecast" class="forecast-grid" aria-live="polite"></div>
+            <div id="err" class="error" style="display:none"></div>
+        </main>
+
+        <footer>
+            <div>Data source: OpenWeatherMap (5-day/3-hour forecast)</div>
+            <div><a class="link" href="https://openweathermap.org/forecast5" target="_blank" rel="noopener">API docs</a>
+            </div>
+        </footer>
+    </div>
+
+    <script>
+        const latInput = document.getElementById('lat');
+        const lonInput = document.getElementById('lon');
+        const getBtn = document.getElementById('getBtn');
+        const sampleBtn = document.getElementById('sampleBtn');
+        const statusEl = document.getElementById('status');
+        const forecastEl = document.getElementById('forecast');
+        const errEl = document.getElementById('err');
+
+        function showError(msg) { 
+            errEl.style.display = 'block'; errEl.textContent = msg;
+        }
+        
+        function clearError() { 
+            errEl.style.display = 'none'; errEl.textContent = '';
+        }
+
+        function setLoading(
+            txt = 'Loading...') { statusEl.innerHTML = '<div class="loading">' + txt + '</div>';
+        }
+
+        function clearLoading() { 
+            statusEl.innerHTML = ''; 
+        }
+
+        function isValidCoord(v) {
+            return v !== '' && !Number.isNaN(Number(v)); 
+        }
+        
+        function formatDateLabel(iso) {
+            const d = new Date(iso); return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }); 
+        }
+
+        function buildIconUrl(icon) {
+            return `https://openweathermap.org/img/wn/${icon}@2x.png`;
+        }
+
+        function aggregateToDays(list) {
+            const days = {};
+            list.forEach(item => {
+                const dateStr = item.dt_txt.split(' ')[0];
+                if (!days[dateStr]) days[dateStr] = { temps: [], weather: {}, items: [] };
+                days[dateStr].temps.push(item.main.temp);
+                days[dateStr].items.push(item);
+                const w = item.weather[0];
+                const key = w.main + '|' + w.description + '|' + w.icon;
+                days[dateStr].weather[key] = (days[dateStr].weather[key] || 0) + 1;
+            });
+            const out = Object.keys(days).map(date => {
+                const d = days[date];
+                const min = Math.min(...d.temps);
+                const max = Math.max(...d.temps);
+                const bestKey = Object.entries(d.weather).sort((a, b) => b[1] - a[1])[0][0];
+                const [main, desc, icon] = bestKey.split('|');
+                return { date, label: formatDateLabel(date + 'T00:00:00'), min, max, main, desc, icon, raw: d.items };
+            });
+            out.sort((a, b) => new Date(a.date) - new Date(b.date));
+            return out.slice(0, 5);
+        }
+
+        async function fetchForecast(lat, lon) {
+            clearError();
+            setLoading('Fetching forecast…');
+            forecastEl.innerHTML = '';
+            try {
+                const latStr = String(lat).trim();
+                const lonStr = String(lon).trim();
+
+                if (!isValidCoord(latStr) || !isValidCoord(lonStr)) {
+                    throw new Error('Invalid latitude or longitude provided to fetchForecast.');
+                }
+
+                const url = `/forecast?lat=${encodeURIComponent(latStr)}&lon=${encodeURIComponent(lonStr)}&_=${Date.now()}`;
+                const res = await fetch(url, { cache: 'no-store' });
+                if (!res.ok) {
+                    const txt = await res.text();
+                    throw new Error(`API error: ${res.status} ${res.statusText} — ${txt}`);
+                }
+                const data = await res.json();
+                if (!data.list || !Array.isArray(data.list)) {
+                    throw new Error('Unexpected API response structure.');
+                }
+                const days = aggregateToDays(data.list);
+                renderForecast(days, data.city);
+            } catch (e) {
+                console.error(e);
+                showError(e.message || 'Failed to fetch forecast.');
+            } finally {
+                clearLoading();
+            }
+        }
+
+        function renderForecast(days, city) {
+            const oldCityInfo = document.getElementById('cityInfo');
+            if (oldCityInfo) oldCityInfo.remove();
+            forecastEl.innerHTML = '';
+
+            if (!days || days.length === 0) {
+                forecastEl.innerHTML = '<div class="small">No forecast data found.</div>';
+                return;
+            }
+
+            // Create forecast cards
+            days.forEach(d => {
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.innerHTML = `
+      <div class="day">${d.label}</div>
+      <img class="icon" alt="${d.desc}" src="${buildIconUrl(d.icon)}" />
+      <div class="temp">${Math.round(d.max)}° / ${Math.round(d.min)}°</div>
+      <div class="desc">${d.main} · ${d.desc}</div>
+      <div class="small">Data points: ${d.raw.length}</div>
+    `;
+                forecastEl.appendChild(card);
+            });
+
+            if (city) {
+                const cityInfoHTML = `
+      <div id="cityInfo" 
+           style="grid-column:1/-1;margin-top:6px;margin-bottom:10px;color:var(--muted);font-size:0.9rem">
+        City: ${city.name || ''}${city.country ? ', ' + city.country : ''}
+        — Coordinates: ${city.coord?.lat?.toFixed?.(3)}, ${city.coord?.lon?.toFixed?.(3)}
+      </div>
+    `;
+                forecastEl.insertAdjacentHTML('beforebegin', cityInfoHTML);
+            }
+        }
+
+        getBtn.addEventListener('click', () => {
+            clearError();
+            const lat = latInput.value.trim();
+            const lon = lonInput.value.trim();
+            if (!isValidCoord(lat) || !isValidCoord(lon)) {
+                showError('Please enter valid numeric latitude and longitude (placeholders show examples).');
+                return;
+            }
+            fetchForecast(lat, lon);
+        });
+
+        // Use-my-location fills inputs but still requires the user to click "Get Forecast"
+        sampleBtn.addEventListener('click', () => {
+            clearError();
+            if (!navigator.geolocation) {
+                showError('Geolocation not supported by this browser.');
+                return;
+            }
+            setLoading('Requesting location…');
+            navigator.geolocation.getCurrentPosition(pos => {
+                clearLoading();
+                latInput.value = pos.coords.latitude.toFixed(6);
+                lonInput.value = pos.coords.longitude.toFixed(6);
+                // helpful hint so user knows what to do next:
+                statusEl.innerHTML = '<div class="small">Location filled — click "Get Forecast" to fetch data for this location.</div>';
+            }, err => {
+                clearLoading();
+                showError('Unable to get location: ' + (err.message || err.code));
+            }, { timeout: 8000 });
+        });
+
+        // Press Enter in either input triggers the same as clicking Get Forecast.
+        [latInput, lonInput].forEach(el => {
+            el.addEventListener('keydown', e => {
+                if (e.key === 'Enter') getBtn.click();
+            });
+        });
+    </script>
+</body>
+
+</html>
